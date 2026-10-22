@@ -1,0 +1,3 @@
+[submodule "tessellator"]
+	path = tessellator
+	url = https://github.com/OpenSEMBA/tessellator.git
