@@ -15,6 +15,31 @@ class CaseMaker():
     def __getitem__(self, key):
         return self.input[key]
 
+    def _readVTK(self, path_to_vtk):
+        assert os.path.isfile(path_to_vtk)
+
+        with open(path_to_vtk, 'rb') as f:
+            header = f.read(512).lstrip()
+
+        # The input files may use a legacy VTK header even when the extension is
+        # .vtu, so the format is detected from the file contents.
+        if header.startswith(b'<'):
+            reader = vtk.vtkXMLGenericDataObjectReader()
+        else:
+            reader = vtk.vtkGenericDataObjectReader()
+
+        reader.SetFileName(path_to_vtk)
+        reader.Update()
+        return reader.GetOutput()
+
+    def _checkSingleGroup(self, polyData):
+        groups = polyData.GetCellData().GetArray('group')
+        if groups is None:
+            return
+        vtkGroups = vtk_to_numpy(groups)
+        if len(np.unique(vtkGroups)) > 1:
+            raise ValueError("Different groups are not supported.")
+
     def setNumberOfTimeSteps(self, steps):
         if 'general' not in self.input:
             self.input['general'] = {}
@@ -28,19 +53,8 @@ class CaseMaker():
         self.input['general']['timeStep'] = time
 
     def setGridFromVTK(self, path_to_grid):
-        assert os.path.isfile(path_to_grid)
-
-        with open(path_to_grid, 'r') as f:
-            c = f.read(1)
-            if (c == '<'):
-                reader = vtk.vtkXMLPolyDataReader()
-            else:
-                reader = vtk.vtkUnstructuredGridReader()
-                
-        reader.SetFileName(path_to_grid)
-        reader.Update()
-
-        points = vtk_to_numpy(reader.GetOutput().GetPoints().GetData())
+        polyData = self._readVTK(path_to_grid)
+        points = vtk_to_numpy(polyData.GetPoints().GetData())
 
         if 'mesh' not in self.input:
             self.input['mesh'] = {}
@@ -70,23 +84,12 @@ class CaseMaker():
             }
         }
 
-    def addConformalVolumeFromVTK(self, path_to_vtk):
-        assert os.path.isfile(path_to_vtk)
+    def addConformalVolumeFromVTK(self, path_to_vtk, subtype="volume", name=None):
+        if subtype not in ("volume", "surface"):
+            raise ValueError("subtype must be 'volume' or 'surface'.")
 
-        with open(path_to_vtk, 'r') as f:
-            c = f.read(1)
-            if (c == '<'):
-                reader = vtk.vtkXMLPolyDataReader()
-            else:
-                reader = vtk.vtkUnstructuredGridReader()
-
-        reader.SetFileName(path_to_vtk)
-        reader.Update()
-        polyData = reader.GetOutput()
-
-        vtkGroups = vtk_to_numpy(polyData.GetCellData().GetArray('group'))
-        if len(np.unique(vtkGroups)) > 1:
-            raise ValueError("Different groups are not supported.")
+        polyData = self._readVTK(path_to_vtk)
+        self._checkSingleGroup(polyData)
 
         # Stores in case input
         if 'mesh' not in self.input:
@@ -97,33 +100,37 @@ class CaseMaker():
         elements = self.input['mesh']['elements']
 
         id = len(elements) + 1
-        elements.append({
+        element = {
             "id": id,
-            "type": "conformalVolume",
+            "type": "cell",
+            "subtype": subtype,
             "intervals" : [],
             "triangles": self._getTriangles(polyData)
-        })
+        }
+        if name is not None:
+            element["name"] = name
+        elements.append(element)
         return id
 
 
-    def addCellElementsFromVTK(self, path_to_vtk):
-        assert os.path.isfile(path_to_vtk)
+    def addCellElementsFromVTK(self, path_to_vtk, name=None):
+        polyData = self._readVTK(path_to_vtk)
+        self._checkSingleGroup(polyData)
+        return self._addCellElement(polyData, name=name)
 
-        with open(path_to_vtk, 'r') as f:
-            c = f.read(1)
-            if (c == '<'):
-                reader = vtk.vtkXMLPolyDataReader()
-            else:
-                reader = vtk.vtkUnstructuredGridReader()
+    def addThinSlotElementsFromVTK(self, path_to_vtk, name=None):
+        '''Adds a cell element made of VTK_LINE cells for a thin slot.'''
+        polyData = self._readVTK(path_to_vtk)
+        self._checkSingleGroup(polyData)
 
-        reader.SetFileName(path_to_vtk)
-        reader.Update()
-        polyData = reader.GetOutput()
+        for i in range(polyData.GetNumberOfCells()):
+            if polyData.GetCellType(i) != vtk.VTK_LINE:
+                raise ValueError(
+                    "Thin slot elements must be built from VTK_LINE cells only.")
 
-        vtkGroups = vtk_to_numpy(polyData.GetCellData().GetArray('group'))
-        if len(np.unique(vtkGroups)) > 1:
-            raise ValueError("Different groups are not supported.")
+        return self._addCellElement(polyData, name=name)
 
+    def _addCellElement(self, polyData, name=None):
         # Stores in case input
         if 'mesh' not in self.input:
             self.input['mesh'] = {}
@@ -133,11 +140,14 @@ class CaseMaker():
         elements = self.input['mesh']['elements']
 
         id = len(elements) + 1
-        elements.append({
+        element = {
             "id": id,
             "type": "cell",
             "intervals": self._getCellsIntervals(polyData)
-        })
+        }
+        if name is not None:
+            element["name"] = name
+        elements.append(element)
         return id
 
 
@@ -197,6 +207,26 @@ class CaseMaker():
 
         return elementId
 
+    def addThinSlotMaterial(self, width, name=None):
+        '''Adds a thinSlot material. Width is in metres, as used by the grid.'''
+        if width <= 0:
+            raise ValueError("The thin slot width must be positive.")
+
+        if 'materials' not in self.input:
+            self.input['materials'] = []
+
+        id = len(self.input['materials']) + 1
+        material = {
+            "id": id,
+            "type": "thinSlot",
+            "width": float(width)
+        }
+        if name is not None:
+            material["name"] = name
+        self.input['materials'].append(material)
+
+        return id
+
     def addPECMaterial(self):
         if 'materials' not in self.input:
             self.input['materials'] = []
@@ -218,14 +248,23 @@ class CaseMaker():
             raise ValueError("No elements defined.")
         if len(elementIds) == 0:
             raise ValueError("No elements to associate.")
+        if materialId < 1 or materialId > len(self.input['materials']):
+            raise ValueError("Invalid material id.")
+        if any(elementId < 1 or elementId > len(self.input['mesh']['elements'])
+               for elementId in elementIds):
+            raise ValueError("Invalid element id.")
 
         if 'materialAssociations' not in self.input:
             self.input['materialAssociations'] = []
 
-        self.input['materialAssociations'].append({
+        association = {
             'materialId': materialId,
             'elementIds': elementIds
-        })
+        }
+        if self.input['materials'][materialId - 1]['type'] == 'thinSlot':
+            association['type'] = 'thinSlot'
+
+        self.input['materialAssociations'].append(association)
 
     def addPlanewaveSource(self, elementId, magnitudeFile, direction, polarization):
         assert os.path.isfile(magnitudeFile)
@@ -380,27 +419,29 @@ class CaseMaker():
         relative = self._absoluteToRelative(
             vtk_to_numpy(polyData.GetPoints().GetData()))
 
-        # Precounts
-        numberOfIntervals = 0
-        for i in range(polyData.GetNumberOfCells()):
-            cellType = polyData.GetCellType(i)
-            if cellType == (vtk.VTK_QUAD or vtk.VTK_LINE):
-                numberOfIntervals += 1
-        res = [None] * numberOfIntervals
-
-        # Writes as list
-        c = 0
+        res = []
         for i in range(polyData.GetNumberOfCells()):
             cellType = polyData.GetCellType(i)
             if cellType == vtk.VTK_QUAD:
                 p1 = polyData.GetCell(i).GetPointId(0)
                 p2 = polyData.GetCell(i).GetPointId(2)
+                expectedVaryingDirections = 2
             elif cellType == vtk.VTK_LINE:
                 p1 = polyData.GetCell(i).GetPointId(0)
                 p2 = polyData.GetCell(i).GetPointId(1)
+                expectedVaryingDirections = 1
             else:
                 continue
-            res[c] = [relative[p1].tolist(), relative[p2].tolist()]
-            c += 1
+
+            start = relative[p1]
+            end = relative[p2]
+            varyingDirections = np.count_nonzero(start != end)
+            if varyingDirections != expectedVaryingDirections:
+                raise ValueError(
+                    "Cell elements must be axis-aligned with the grid. "
+                    "Found a cell with {} varying directions.".format(
+                        varyingDirections))
+
+            res.append([start.tolist(), end.tolist()])
 
         return res

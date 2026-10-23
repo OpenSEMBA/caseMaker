@@ -105,6 +105,35 @@ cm.addFarFieldProbe(n2ff_id, "n2ff", theta, phi, domain)
 cm.exportCase("sphere_rcs")
 ```
 
+### Thin slots
+
+fdtd represents a thin slot as a material of type `thinSlot` with a `width`,
+associated with line cell elements that follow the slot centerline. The
+tessellator produces those line cells when the slot geometry is meshed with the
+same grid as the surrounding conductor:
+
+```python
+cm = CaseMaker()
+cm.setGridFromVTK("squareInSquare.tessellator.grid.vtk")
+
+plate_id = cm.addCellElementsFromVTK(
+    "SquareInSquare.tessellator.str.vtk", name="plate")
+slot_id = cm.addThinSlotElementsFromVTK(
+    "Discretize_Wire.tessellator.str.vtk", name="slot")
+
+pec_id = cm.addPECMaterial()
+cm.addMaterialAssociation(pec_id, [plate_id])
+
+slot_material_id = cm.addThinSlotMaterial(1e-3, name="slot")
+cm.addMaterialAssociation(slot_material_id, [slot_id])
+
+cm.exportCase("thin_slot")
+```
+
+`addThinSlotElementsFromVTK()` accepts only `VTK_LINE` cells. Its points must
+lie on grid nodes, and the resulting line cells must be associated with a
+conductive or surface-impedance sheet.
+
 ## Running cases with the fdtd Python wrapper
 
 `caseMaker` only builds the case. To run it and analyse the results from
@@ -165,10 +194,12 @@ to `PYTHONPATH`.
 | --- | --- |
 | `setGridFromVTK(path)` | Load grid origin, number of cells and steps from a VTK grid. |
 | `addCellElementsFromVTK(path)` | Add staircased cell elements from QUAD/LINE VTK cells. |
-| `addConformalVolumeFromVTK(path)` | Add a conformal volume from TRIANGLE VTK cells. |
+| `addThinSlotElementsFromVTK(path)` | Add line cell elements for a thin slot. |
+| `addConformalVolumeFromVTK(path)` | Add a conformal volume/surface from TRIANGLE VTK cells. |
 | `addCellElementBox(bbox)` | Add a cell element from an absolute-coordinate box. |
 | `addNodeElement(position)` | Add a mesh node (used by point probes, etc.). |
 | `addPECMaterial()` / `addMaterialAssociation(...)` | Define materials and associate them with elements. |
+| `addThinSlotMaterial(width)` | Define a `thinSlot` material (width in metres, matching the grid). |
 | `addPlanewaveSource(...)` | Add a plane-wave source with an excitation file. |
 | `addPointProbe(...)` / `addFarFieldProbe(...)` | Add point and far-field probes. |
 | `exportCase(name)` | Write `<name>.fdtd.json`. |
@@ -179,16 +210,23 @@ to `PYTHONPATH`.
 python3 -m pytest test
 ```
 
-Run from the repository root; the tests use the files in `testData/` and compare
-the generated case against `testData/outputs/sphere_rcs.fdtd.json`.
+Run from the repository root. The tests use the files in `testData/`; one test
+compares the generated sphere case against
+`testData/outputs/sphere_rcs.fdtd.json`, and the thin-slot tests use the
+tessellator outputs in `testData/thin_slot/`.
 
 ## Notes and limitations
 
+- VTK inputs may be legacy or XML files regardless of their extension; the
+  format is detected from the file contents.
 - Each VTK input must contain a cell-data array named `group` with a single
   group; multiple groups per file are not supported.
 - Cell elements are built from `VTK_QUAD` and `VTK_LINE` cells. Their points
   must lie on grid nodes.
-- Conformal volumes are built from `VTK_TRIANGLE` cells.
+- Thin-slot elements are built from `VTK_LINE` cells only and must be
+  associated with a conductive or surface-impedance sheet.
+- Conformal elements are built from `VTK_TRIANGLE` cells and use the current
+  `cell` element type with a `volume` or `surface` subtype.
 - Coordinates in the exported `.fdtd.json` are relative to the grid.
 - `exportCase()` currently writes only `<name>.fdtd.json` to the current
   working directory. Input files referenced by the case (e.g. the excitation
