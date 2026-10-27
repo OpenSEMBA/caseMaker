@@ -119,14 +119,16 @@ class CaseMaker():
         return self._addCellElement(polyData, name=name)
 
     def addThinSlotElementsFromVTK(self, path_to_vtk, name=None):
-        '''Adds a cell element made of VTK_LINE cells for a thin slot.'''
+        '''Adds line or embedded-surface cell elements for a thin slot.'''
         polyData = self._readVTK(path_to_vtk)
         self._checkSingleGroup(polyData)
 
         for i in range(polyData.GetNumberOfCells()):
-            if polyData.GetCellType(i) != vtk.VTK_LINE:
+            cellType = polyData.GetCellType(i)
+            if cellType not in (vtk.VTK_LINE, vtk.VTK_QUAD):
                 raise ValueError(
-                    "Thin slot elements must be built from VTK_LINE cells only.")
+                    "Thin slot elements must be built from VTK_LINE or "
+                    "VTK_QUAD cells only.")
 
         return self._addCellElement(polyData, name=name)
 
@@ -161,7 +163,7 @@ class CaseMaker():
         elements = self.input['mesh']['elements']
 
         rel = self._absoluteToRelative(
-            np.array([boundingBox[0], boundingBox[1]]))
+            np.array([boundingBox[0], boundingBox[1]]), snap=True)
 
         id = len(elements) + 1
         elements.append({
@@ -182,7 +184,7 @@ class CaseMaker():
             pos = position.reshape((1, 3))
         else:
             raise ValueError("Invalid type for position")
-        relative = self._absoluteToRelative(pos)
+        relative = self._absoluteToRelative(pos, snap=True)
 
         if 'mesh' not in self.input:
             self.input['mesh'] = {}
@@ -333,42 +335,44 @@ class CaseMaker():
 
         return res
 
-    def _filterIntegerCoordinates(self, absoluteCoordinates):
-        nInts = 0
-        for c in absoluteCoordinates:
-            if all(v == True for v in [modf(c[x])[0] == 0 for x in range(3)]) == True:
-                nInts = nInts + 1
-        res = np.zeros([nInts,3])
-        nInts = 0
-        for c in absoluteCoordinates:
-            if all(v == True for v in [modf(c[x])[0] == 0 for x in range(3)]) == True:
-                res[nInts] = c
-                nInts = nInts + 1
-        return res
-    
-    def _absoluteToRelative(self, absoluteCoordinates, arg_type = int):
+    def _absoluteToRelative(self, absoluteCoordinates, arg_type = int, snap = False):
         gridLines = self._buildGridLines()
+        coordinates = np.asarray(absoluteCoordinates, dtype=float)
+        if coordinates.ndim == 1:
+            coordinates = coordinates.reshape((1, 3))
 
-        if (arg_type == int):
-            absoluteCoordinates = self._filterIntegerCoordinates(absoluteCoordinates)
-        
-        res = np.empty_like(absoluteCoordinates, dtype=arg_type)
-        for x in range(3):
-            for i in range(absoluteCoordinates.shape[0]):
-                array = gridLines[x]
-                value = absoluteCoordinates[i, x]
-                idx = np.searchsorted(array, value, side="left")
-                if (arg_type == int):
-                    if idx > 0 and (idx == len(array) or np.abs(value - array[idx-1]) < np.abs(value - array[idx])):
-                        res[i, x] = idx-1
-                    else:
-                        res[i,x] = idx
-                else:
-                    res[i, x] = idx-1 + (value-array[idx-1])/(array[idx]-array[idx-1])
+        res = np.empty_like(coordinates, dtype=arg_type)
+        for axis in range(3):
+            lines = gridLines[axis]
+            values = coordinates[:, axis]
+            tolerance = 1e-6 * max(1.0, float(np.max(np.abs(lines))))
 
-        if np.any(absoluteCoordinates - self._relativeToAbsolute(res) > 1e-10):
-            raise ValueError(
-                "Error in conversion from absolute to relative coordinates.")
+            if np.any(values < lines[0] - tolerance) or \
+               np.any(values > lines[-1] + tolerance):
+                raise ValueError(
+                    "Coordinate is outside the grid in axis {}.".format(axis))
+
+            idx = np.searchsorted(lines, values, side="right") - 1
+            idx = np.clip(idx, 0, len(lines) - 2)
+            lower = lines[idx]
+            upper = lines[idx + 1]
+
+            if (arg_type == int):
+                nearest = np.where(
+                    np.abs(values - lower) < np.abs(values - upper),
+                    idx, idx + 1)
+                if not snap and np.any(
+                        np.abs(values - lines[nearest]) > tolerance):
+                    raise ValueError(
+                        "Coordinate is not aligned with a grid node in axis {}."
+                        .format(axis))
+                res[:, axis] = nearest
+            else:
+                span = upper - lower
+                with np.errstate(divide="ignore", invalid="ignore"):
+                    fraction = np.where(
+                        span != 0, (values - lower) / span, 0.0)
+                res[:, axis] = idx + fraction
 
         return res
 

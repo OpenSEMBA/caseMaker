@@ -107,14 +107,22 @@ cm.exportCase("sphere_rcs")
 
 ### Thin slots
 
-fdtd represents a thin slot as a material of type `thinSlot` with a `width`,
-associated with line cell elements that follow the slot centerline. The
-tessellator produces those line cells when the slot geometry is meshed with the
-same grid as the surrounding conductor:
+fdtd represents a thin slot as a material of type `thinSlot` with a `width`.
+The slot can be meshed either as a line or as an embedded one-quad-wide surface
+strip. The surface form is recommended because fdtd can use the cell faces
+directly:
+
+```json
+"mesher": {
+    "type": "staircase",
+    "options": {"embedded": "surface"}
+}
+```
 
 ```python
 cm = CaseMaker()
-cm.setGridFromVTK("squareInSquare.tessellator.grid.vtk")
+cm.setGridFromVTK(
+    "squareInSquare.embeddedSurface.tessellator.grid.vtk")
 
 plate_id = cm.addCellElementsFromVTK(
     "SquareInSquare.tessellator.str.vtk", name="plate")
@@ -130,9 +138,10 @@ cm.addMaterialAssociation(slot_material_id, [slot_id])
 cm.exportCase("thin_slot")
 ```
 
-`addThinSlotElementsFromVTK()` accepts only `VTK_LINE` cells. Its points must
-lie on grid nodes, and the resulting line cells must be associated with a
-conductive or surface-impedance sheet.
+`addThinSlotElementsFromVTK()` accepts `VTK_LINE` cells (legacy line mode) and
+`VTK_QUAD` cells (embedded surface strips). All points must lie on grid nodes.
+The tessellator validates that the slot strip is embedded in a conductive host
+surface; fdtd rejects ambiguous or perimeter-running strips.
 
 ## Running cases with the fdtd Python wrapper
 
@@ -177,13 +186,26 @@ useful for parameter sweeps and automated post-processing: build each case with
 - [pandas](https://pandas.pydata.org/) if you use the fdtd Python wrapper to
   load probe results.
 - [OpenSEMBA/tessellator](https://github.com/OpenSEMBA/tessellator), included as
-  the `tessellator/` git submodule. Clone recursively:
+  the `tessellator/` git submodule, for generating the input meshes.
+- [OpenSEMBA/fdtd](https://github.com/OpenSEMBA/fdtd), included as the `fdtd/`
+  git submodule, for the solver integration test.
 
-  ```shell
-  git clone --recursive <repository-url>
-  ```
+Clone recursively:
 
-  and build it following its README.
+```shell
+git clone --recursive <repository-url>
+```
+
+Build the solver used by the integration test with:
+
+```shell
+cmake -S fdtd -B fdtd/build -G Ninja \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DSEMBA_FDTD_ENABLE_MPI=OFF \
+  -DSEMBA_FDTD_ENABLE_MTLN=OFF \
+  -DSEMBA_FDTD_ENABLE_TEST=ON
+cmake --build fdtd/build -j
+```
 
 There is no packaging yet; run the code from the repository root or add `src/`
 to `PYTHONPATH`.
@@ -194,7 +216,7 @@ to `PYTHONPATH`.
 | --- | --- |
 | `setGridFromVTK(path)` | Load grid origin, number of cells and steps from a VTK grid. |
 | `addCellElementsFromVTK(path)` | Add staircased cell elements from QUAD/LINE VTK cells. |
-| `addThinSlotElementsFromVTK(path)` | Add line cell elements for a thin slot. |
+| `addThinSlotElementsFromVTK(path)` | Add line or embedded-surface cell elements for a thin slot. |
 | `addConformalVolumeFromVTK(path)` | Add a conformal volume/surface from TRIANGLE VTK cells. |
 | `addCellElementBox(bbox)` | Add a cell element from an absolute-coordinate box. |
 | `addNodeElement(position)` | Add a mesh node (used by point probes, etc.). |
@@ -215,6 +237,13 @@ compares the generated sphere case against
 `testData/outputs/sphere_rcs.fdtd.json`, and the thin-slot tests use the
 tessellator outputs in `testData/thin_slot/`.
 
+The fdtd integration test is skipped when `semba-fdtd` is not available. Point
+`SEMBA_EXE` at the solver to run it explicitly:
+
+```shell
+SEMBA_EXE="$PWD/fdtd/build/bin/semba-fdtd" python3 -m pytest test
+```
+
 ## Notes and limitations
 
 - VTK inputs may be legacy or XML files regardless of their extension; the
@@ -223,8 +252,9 @@ tessellator outputs in `testData/thin_slot/`.
   group; multiple groups per file are not supported.
 - Cell elements are built from `VTK_QUAD` and `VTK_LINE` cells. Their points
   must lie on grid nodes.
-- Thin-slot elements are built from `VTK_LINE` cells only and must be
-  associated with a conductive or surface-impedance sheet.
+- Thin-slot elements are built from `VTK_LINE` cells (legacy) or `VTK_QUAD`
+  cells (embedded surface strips). They must be associated with a conductive
+  or surface-impedance sheet.
 - Conformal elements are built from `VTK_TRIANGLE` cells and use the current
   `cell` element type with a `volume` or `surface` subtype.
 - Coordinates in the exported `.fdtd.json` are relative to the grid.
