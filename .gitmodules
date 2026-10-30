@@ -1,0 +1,8 @@
+[submodule "tessellator"]
+	path = tessellator
+	url = https://github.com/OpenSEMBA/tessellator.git
+	branch = 112-thin-slots-meshing
+[submodule "fdtd"]
+	path = fdtd
+	url = https://github.com/OpenSEMBA/fdtd.git
+	branch = 493-thin-slots-on-surfaces

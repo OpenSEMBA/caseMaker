@@ -1,0 +1,165 @@
+name: tests
+
+on:
+  push:
+    branches:
+      - main
+      - dev
+      - thin-slots-cases
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pytest:
+    name: pytest / python ${{ matrix.python-version }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.12"]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
+      - name: Run tests
+        run: python -m pytest -vv test/ --durations=0 --junitxml=pytest-results.xml
+
+      - name: Upload failed test diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pytest-results-${{ matrix.python-version }}
+          path: pytest-results.xml
+          if-no-files-found: warn
+
+  fdtd-integration:
+    name: fdtd integration
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Setup Fortran compiler
+        uses: fortran-lang/setup-fortran@v1
+        with:
+          compiler: gcc
+          version: "11"
+
+      - name: Setup Ninja
+        uses: seanmiddleditch/gha-setup-ninja@master
+
+      - name: Install HDF5
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libhdf5-dev
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
+      - name: Build fdtd
+        run: |
+          cmake -S fdtd -B fdtd/build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DSEMBA_FDTD_ENABLE_MPI=OFF \
+            -DSEMBA_FDTD_ENABLE_MTLN=OFF \
+            -DSEMBA_FDTD_ENABLE_TEST=ON
+          cmake --build fdtd/build -j
+
+      - name: Run fdtd native tests
+        run: ctest --test-dir fdtd/build --output-on-failure
+
+      - name: Run caseMaker tests with fdtd
+        env:
+          SEMBA_EXE: ${{ github.workspace }}/fdtd/build/bin/semba-fdtd
+          OMP_NUM_THREADS: "1"
+        run: python -m pytest -vv test/ --durations=0 --junitxml=pytest-fdtd-results.xml
+
+      - name: Upload failed test diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fdtd-integration-results
+          path: |
+            pytest-fdtd-results.xml
+            fdtd/build/Testing/Temporary/LastTest.log
+          if-no-files-found: warn
+
+  tessellator-smoke:
+    name: tessellator embedded-surface smoke test
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Checkout tessellator submodule
+        run: git submodule update --init tessellator
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libvtk9-dev ninja-build
+
+      - name: Export GitHub Actions cache environment variables
+        uses: actions/github-script@v7
+        with:
+          script: |
+            core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
+            core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
+
+      - name: Setup vcpkg
+        uses: lukka/run-vcpkg@v11
+        with:
+          vcpkgGitCommitId: eed289f6e06a5e7a5c9e6a729671b0a56af7dd69
+          runVcpkgInstall: false
+
+      - name: Build tessellator
+        run: |
+          cmake -S tessellator -B tessellator/build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DTESSELLATOR_ENABLE_TESTS=OFF \
+            -DTESSELLATOR_ENABLE_CGAL=OFF \
+            -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake"
+          cmake --build tessellator/build -j
+
+      - name: Run embedded-surface case
+        run: |
+          rm -rf /tmp/thin-slot-smoke
+          mkdir -p /tmp/thin-slot-smoke
+          cp testData/thin_slot/surface/* /tmp/thin-slot-smoke/
+          cd /tmp/thin-slot-smoke
+          "${GITHUB_WORKSPACE}/tessellator/build/bin/tessellator" \
+            -i squareInSquare.embeddedSurface.tessellator.json
+          test -f SquareInSquare.tessellator.str.vtk
+          test -f Discretize_Wire.tessellator.str.vtk
+          test -f squareInSquare.embeddedSurface.tessellator.grid.vtk

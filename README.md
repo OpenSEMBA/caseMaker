@@ -1,2 +1,268 @@
 # caseMaker
-A collection of python helper functions to create json files for FDTD cases
+
+`caseMaker` generates simulation cases for
+[OpenSEMBA/fdtd](https://github.com/OpenSEMBA/fdtd) in the `.fdtd.json` format.
+
+The starting point is a set of files describing the geometry, mainly **lines and
+triangles** in VTK format (`.vtp` / `.vtu`). The geometry is meshed with
+[OpenSEMBA/tessellator](https://github.com/OpenSEMBA/tessellator), and the
+resulting grid and mesh information is assembled into a case folder containing
+everything needed to run the case:
+
+- `<case_name>.fdtd.json` — the FDTD case definition;
+- the excitation/magnitude files referenced by the case (e.g. `gauss.exc`);
+- the geometry and grid files used to build it.
+
+```text
+geometry files (lines, triangles, ...)
+            │
+            ▼
+ OpenSEMBA/tessellator  →  grid + meshes (VTK)
+            │
+            ▼
+        caseMaker       →  <case_name>/
+                              ├── <case_name>.fdtd.json
+                              ├── <excitation files>
+                              └── needed inputs
+```
+
+The generated cases can be run directly with `semba-fdtd`, or through the
+[Python wrapper](https://github.com/OpenSEMBA/fdtd/blob/main/src_pyWrapper/pyWrapper.py)
+included in the OpenSEMBA/fdtd repository. The wrapper can launch the solver
+and read the generated probe outputs back into Python, so `caseMaker` and
+`pyWrapper` can be used together for an end-to-end workflow:
+
+```text
+geometry → tessellator → caseMaker → case folder → pyWrapper → results
+```
+
+## Workflow
+
+1. **Describe the geometry.** Provide line/triangle meshes in VTK files.
+2. **Mesh with tessellator.** Write a `.tessellator.json` describing the grid
+   and objects, then run:
+
+   ```shell
+   tessellator -i <case_name>.tessellator.json
+   ```
+
+   This produces the grid and the meshed geometry as VTK files. See the
+   [tessellator README](tessellator/README.md) for the JSON format.
+3. **Build the FDTD case** with the `CaseMaker` Python API: load the grid,
+   add mesh elements, materials, sources and probes.
+4. **Export and run.** `exportCase()` writes the `.fdtd.json` case. Run it with
+   `semba-fdtd -i <case_name>.fdtd.json`, or use the fdtd Python wrapper
+   (`FDTD`) to launch it and load probe results (`Probe`).
+
+## Example
+
+The following is the sphere RCS case from `test/test_caseMaker.py`:
+
+```python
+import numpy as np
+from src.caseMaker import CaseMaker
+
+cm = CaseMaker()
+cm.setNumberOfTimeSteps(1)
+cm.setTimeStep(1e-12)
+cm.setAllBoundaries("mur")
+
+# Grid and surface produced by tessellator.
+cm.setGridFromVTK("sphere.grid.vtp")
+sphere_id = cm.addCellElementsFromVTK("buggy_sphere.str.vtp")
+
+# PEC sphere.
+pec_id = cm.addPECMaterial()
+cm.addMaterialAssociation(pec_id, [sphere_id])
+
+# Plane-wave source.
+box_id = cm.addCellElementBox([[-75., -75., -75.], [75., 75., 75.]])
+direction = {"theta": np.pi / 2, "phi": 0.0}
+polarization = {"theta": np.pi / 2, "phi": np.pi / 2}
+
+dt, w0, t0 = 1e-12, 0.1e-9, 10 * 0.1e-9
+t = np.arange(0, t0 + 20 * w0, dt)
+data = np.column_stack((t, np.exp(-((t - t0) / w0) ** 2)))
+np.savetxt("gauss.exc", data)
+cm.addPlanewaveSource(box_id, "gauss.exc", direction, polarization)
+
+# Probes.
+probe_id = cm.addNodeElement([-65.0, 0.0, 0.0])
+cm.addPointProbe(probe_id, name="front")
+
+n2ff_id = cm.addCellElementBox([[-85., -85., -85.], [85., 85., 85.]])
+theta = {"initial": np.pi / 2, "final": np.pi / 2, "step": 0.0}
+phi = {"initial": np.pi, "final": np.pi, "step": 0.0}
+domain = {
+    "type": "frequency",
+    "initialFrequency": 10e6,
+    "finalFrequency": 1e9,
+    "numberOfFrequencies": 10,
+    "frequencySpacing": "logarithmic",
+}
+cm.addFarFieldProbe(n2ff_id, "n2ff", theta, phi, domain)
+
+cm.exportCase("sphere_rcs")
+```
+
+### Thin slots
+
+fdtd represents a thin slot as a material of type `thinSlot` with a `width`.
+The slot can be meshed either as a line or as an embedded one-quad-wide surface
+strip. The surface form is recommended because fdtd can use the cell faces
+directly:
+
+```json
+"mesher": {
+    "type": "staircase",
+    "options": {"embedded": "surface"}
+}
+```
+
+```python
+cm = CaseMaker()
+cm.setGridFromVTK(
+    "squareInSquare.embeddedSurface.tessellator.grid.vtk")
+
+plate_id = cm.addCellElementsFromVTK(
+    "SquareInSquare.tessellator.str.vtk", name="plate")
+slot_id = cm.addThinSlotElementsFromVTK(
+    "Discretize_Wire.tessellator.str.vtk", name="slot")
+
+pec_id = cm.addPECMaterial()
+cm.addMaterialAssociation(pec_id, [plate_id])
+
+slot_material_id = cm.addThinSlotMaterial(1e-3, name="slot")
+cm.addMaterialAssociation(slot_material_id, [slot_id])
+
+cm.exportCase("thin_slot")
+```
+
+`addThinSlotElementsFromVTK()` accepts `VTK_LINE` cells (legacy line mode) and
+`VTK_QUAD` cells (embedded surface strips). All points must lie on grid nodes.
+The tessellator validates that the slot strip is embedded in a conductive host
+surface; fdtd rejects ambiguous or perimeter-running strips.
+
+## Running cases with the fdtd Python wrapper
+
+`caseMaker` only builds the case. To run it and analyse the results from
+Python, use the wrapper shipped with OpenSEMBA/fdtd
+(`src_pyWrapper/pyWrapper.py`). Add that directory to `PYTHONPATH` or copy the
+module into your project, then:
+
+```python
+from pyWrapper import FDTD, Probe
+
+# Run the case generated by caseMaker.
+fdtd = FDTD(
+    "sphere_rcs.fdtd.json",
+    path_to_exe="/path/to/fdtd/build/bin/semba-fdtd",
+)
+fdtd.run()
+
+# Load the outputs of a probe defined in the case.
+for probe_folder in fdtd.getSolvedProbeFolders("front"):
+    probe = Probe(probe_folder)
+    print(probe.name)
+    print(probe.data.head())
+```
+
+The wrapper can also:
+
+- run with MPI or extra solver flags via `mpi_command` and `flags`;
+- copy the case and its referenced input files to another directory with
+  `run_in_folder`;
+- locate and parse point, wire, far-field, MTLN and movie probe outputs;
+- remove generated output files with `cleanUp()`.
+
+Because `caseMaker` writes the `.fdtd.json` and its excitation files, the
+wrapper can consume the resulting folder directly. This makes the combination
+useful for parameter sweeps and automated post-processing: build each case with
+`CaseMaker`, run it with `FDTD`, and inspect probes with `Probe`.
+
+## Requirements
+
+- Python 3 with NumPy and the VTK Python bindings.
+- [pandas](https://pandas.pydata.org/) if you use the fdtd Python wrapper to
+  load probe results.
+- [OpenSEMBA/tessellator](https://github.com/OpenSEMBA/tessellator), included as
+  the `tessellator/` git submodule, for generating the input meshes.
+- [OpenSEMBA/fdtd](https://github.com/OpenSEMBA/fdtd), included as the `fdtd/`
+  git submodule, for the solver integration test.
+
+Clone recursively:
+
+```shell
+git clone --recursive <repository-url>
+```
+
+Build the solver used by the integration test with:
+
+```shell
+cmake -S fdtd -B fdtd/build -G Ninja \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DSEMBA_FDTD_ENABLE_MPI=OFF \
+  -DSEMBA_FDTD_ENABLE_MTLN=OFF \
+  -DSEMBA_FDTD_ENABLE_TEST=ON
+cmake --build fdtd/build -j
+```
+
+There is no packaging yet; run the code from the repository root or add `src/`
+to `PYTHONPATH`.
+
+## API overview
+
+| Method | Purpose |
+| --- | --- |
+| `setGridFromVTK(path)` | Load grid origin, number of cells and steps from a VTK grid. |
+| `addCellElementsFromVTK(path)` | Add staircased cell elements from QUAD/LINE VTK cells. |
+| `addThinSlotElementsFromVTK(path)` | Add line or embedded-surface cell elements for a thin slot. |
+| `addConformalVolumeFromVTK(path)` | Add a conformal volume/surface from TRIANGLE VTK cells. |
+| `addCellElementBox(bbox)` | Add a cell element from an absolute-coordinate box. |
+| `addNodeElement(position)` | Add a mesh node (used by point probes, etc.). |
+| `addPECMaterial()` / `addMaterialAssociation(...)` | Define materials and associate them with elements. |
+| `addThinSlotMaterial(width)` | Define a `thinSlot` material (width in metres, matching the grid). |
+| `addPlanewaveSource(...)` | Add a plane-wave source with an excitation file. |
+| `addPointProbe(...)` / `addFarFieldProbe(...)` | Add point and far-field probes. |
+| `exportCase(name)` | Write `<name>.fdtd.json`. |
+
+## Tests
+
+```shell
+python3 -m pytest test
+```
+
+Run from the repository root. The tests use the files in `testData/`; one test
+compares the generated sphere case against
+`testData/outputs/sphere_rcs.fdtd.json`, and the thin-slot tests use the
+tessellator outputs in `testData/thin_slot/`.
+
+The fdtd integration test is skipped when `semba-fdtd` is not available. Point
+`SEMBA_EXE` at the solver to run it explicitly:
+
+```shell
+SEMBA_EXE="$PWD/fdtd/build/bin/semba-fdtd" python3 -m pytest test
+```
+
+## Notes and limitations
+
+- VTK inputs may be legacy or XML files regardless of their extension; the
+  format is detected from the file contents.
+- Each VTK input must contain a cell-data array named `group` with a single
+  group; multiple groups per file are not supported.
+- Cell elements are built from `VTK_QUAD` and `VTK_LINE` cells. Their points
+  must lie on grid nodes.
+- Thin-slot elements are built from `VTK_LINE` cells (legacy) or `VTK_QUAD`
+  cells (embedded surface strips). They must be associated with a conductive
+  or surface-impedance sheet.
+- Conformal elements are built from `VTK_TRIANGLE` cells and use the current
+  `cell` element type with a `volume` or `surface` subtype.
+- Coordinates in the exported `.fdtd.json` are relative to the grid.
+- `exportCase()` currently writes only `<name>.fdtd.json` to the current
+  working directory. Input files referenced by the case (e.g. the excitation
+  file) must be placed alongside it; automatic creation/copying of the complete
+  case folder is not implemented yet.
+
+## License
+
+See [LICENSE](LICENSE).
