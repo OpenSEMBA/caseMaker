@@ -16,7 +16,7 @@ concurrency:
 jobs:
   pytest:
     name: pytest / python ${{ matrix.python-version }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     strategy:
       fail-fast: false
@@ -51,7 +51,7 @@ jobs:
 
   fdtd-integration:
     name: fdtd integration
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
 
     steps:
@@ -115,7 +115,7 @@ jobs:
 
   tessellator-smoke:
     name: tessellator embedded-surface smoke test
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
 
     steps:
