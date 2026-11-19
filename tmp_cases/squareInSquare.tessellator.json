@@ -1,0 +1,44 @@
+{
+    "_version": "0.1",
+    "_format": "Tessellator Data File in JSON format",
+    "grid": {
+        "numberOfCells": [
+            40,
+            40,
+            23
+        ],
+        "boundingBox": [
+            [
+                -20.0,
+                -20.0,
+                -10.0
+            ],
+            [
+                20.0,
+                20.0,
+                13.0
+            ]
+        ]
+    },
+    "mesher": {
+        "type": "staircase",
+        "options": {
+            "compress": true
+        }
+    },
+    "objects": [
+        {
+            "filename": "SquareInSquare.vtu",
+            "group": "SquareInSquare",
+            "ghost": false
+        },
+        {
+            "filename": "Discretize_Wire.vtu",
+            "group": "Discretize_Wire",
+            "ghost": false
+        }
+    ],
+    "output": {
+        "singleFile": false
+    }
+}
