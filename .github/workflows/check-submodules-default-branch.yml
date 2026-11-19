@@ -73,10 +73,13 @@ jobs:
             echo "Pinned commit: ${sha}"
 
             git -C "${path}" remote set-branches --add origin '*'
-            git -C "${path}" fetch --no-tags origin '+refs/heads/*:refs/remotes/origin/*' >/dev/null
+            # Do not recurse into the submodule's own submodules: some of them
+            # reference commits that no longer exist upstream, which would fail
+            # this fetch even though only the superproject history is needed.
+            git -C "${path}" fetch --no-recurse-submodules --no-tags origin '+refs/heads/*:refs/remotes/origin/*' >/dev/null
 
             if git -C "${path}" rev-parse --is-shallow-repository | grep -q true; then
-              git -C "${path}" fetch --unshallow --no-tags origin >/dev/null
+              git -C "${path}" fetch --no-recurse-submodules --unshallow --no-tags origin >/dev/null
             fi
 
             candidate_branches=()
