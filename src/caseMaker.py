@@ -290,6 +290,25 @@ class CaseMaker():
 
         return id
 
+    def addCellElementIntervals(self, intervals, name=None):
+        '''Adds a cell element from closed-open relative node intervals.'''
+        if 'mesh' not in self.input:
+            self.input['mesh'] = {}
+        if 'elements' not in self.input['mesh']:
+            self.input['mesh']['elements'] = []
+        elements = self.input['mesh']['elements']
+
+        id = len(elements) + 1
+        element = {
+            "id": id,
+            "type": "cell",
+            "intervals": intervals,
+        }
+        if name is not None:
+            element["name"] = name
+        elements.append(element)
+        return id
+
     def addNodeElement(self, position):
         ''' position is assumed to be in absolute coordinates.'''
         if isinstance(position, list):
