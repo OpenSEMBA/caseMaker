@@ -438,6 +438,22 @@ class CaseMaker():
             "domain": domain
         })
 
+    def addMovieProbe(self, elementId, name, field="electric",
+                      component="magnitude", domain=None):
+        if 'probes' not in self.input:
+            self.input['probes'] = []
+
+        probe = {
+            "name": name,
+            "type": "movie",
+            "field": field,
+            "component": component,
+            "elementIds": [elementId],
+        }
+        if domain is not None:
+            probe["domain"] = domain
+        self.input['probes'].append(probe)
+
     def exportCase(self, case_name):
         with open(case_name + '.fdtd.json', 'w') as f:
             json.dump(self.input, f)
