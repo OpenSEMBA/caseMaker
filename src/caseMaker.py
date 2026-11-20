@@ -84,6 +84,120 @@ class CaseMaker():
             }
         }
 
+    def setGridFromJSON(self, path_to_grid):
+        with open(path_to_grid, 'r') as f:
+            grid = json.load(f)
+        self.input.setdefault('mesh', {})['grid'] = grid
+
+    def writeGridJSON(self, path_to_grid):
+        if 'mesh' not in self.input or 'grid' not in self.input['mesh']:
+            raise ValueError("No grid has been defined.")
+        with open(path_to_grid, 'w') as f:
+            json.dump(self.input['mesh']['grid'], f, indent=2)
+        return path_to_grid
+
+    @staticmethod
+    def _expandedSteps(steps, count):
+        values = [float(value) for value in steps]
+        if len(values) == 1:
+            values = values * count
+        if len(values) != count:
+            raise ValueError(
+                "Grid steps length must be 1 or numberOfCells.")
+        return values
+
+    def _validateGrid(self, fragment_grid):
+        if 'mesh' not in self.input or 'grid' not in self.input['mesh']:
+            self.input.setdefault('mesh', {})['grid'] = fragment_grid
+            return
+
+        grid = self.input['mesh']['grid']
+        fragment_counts = [int(value) for value in fragment_grid['numberOfCells']]
+        counts = [int(value) for value in grid['numberOfCells']]
+        if fragment_counts != counts:
+            raise ValueError(
+                "Fragment grid numberOfCells does not match the case grid.")
+        if not np.allclose(grid['origin'], fragment_grid['origin'],
+                           rtol=0.0, atol=1.0e-12):
+            raise ValueError(
+                "Fragment grid origin does not match the case grid.")
+        for axis, count in zip(('x', 'y', 'z'), counts):
+            case_steps = self._expandedSteps(grid['steps'][axis], count)
+            fragment_steps = self._expandedSteps(
+                fragment_grid['steps'][axis], count)
+            if not np.allclose(case_steps, fragment_steps,
+                               rtol=0.0, atol=1.0e-12):
+                raise ValueError(
+                    "Fragment grid steps do not match the case grid "
+                    "in axis {}.".format(axis))
+
+    def addMaterialFragment(self, path_to_fragment):
+        '''Merge a material/mesh/materialAssociations fragment.
+
+        The fragment is geometry-agnostic: it contains one material with a
+        levels array, one cell element per level, and one association per
+        level.  IDs are remapped to the next free ids in this case.
+        '''
+        with open(path_to_fragment, 'r') as f:
+            fragment = json.load(f)
+
+        for key in ('material', 'mesh', 'materialAssociations'):
+            if key not in fragment:
+                raise ValueError(
+                    "Material fragment is missing '{}'.".format(key))
+        if 'grid' not in fragment['mesh'] or \
+           'elements' not in fragment['mesh']:
+            raise ValueError(
+                "Material fragment mesh must contain 'grid' and 'elements'.")
+
+        self._validateGrid(fragment['mesh']['grid'])
+
+        self.input.setdefault('materials', [])
+        self.input.setdefault('mesh', {})
+        self.input['mesh'].setdefault('elements', [])
+        self.input.setdefault('materialAssociations', [])
+
+        material = dict(fragment['material'])
+        old_material_id = material.get('id', 1)
+        new_material_id = len(self.input['materials']) + 1
+        material['id'] = new_material_id
+        self.input['materials'].append(material)
+
+        element_offset = len(self.input['mesh']['elements'])
+        element_map = {}
+        for index, element in enumerate(fragment['mesh']['elements'],
+                                        start=1):
+            old_element_id = element.get('id', index)
+            new_element_id = element_offset + index
+            element = dict(element)
+            element['id'] = new_element_id
+            self.input['mesh']['elements'].append(element)
+            element_map[old_element_id] = new_element_id
+
+        for association in fragment['materialAssociations']:
+            association_material = association.get(
+                'materialId', old_material_id)
+            if association_material != old_material_id:
+                raise ValueError(
+                    "Material fragment association references an unknown "
+                    "material.")
+            element_ids = []
+            for element_id in association.get('elementIds', []):
+                if element_id not in element_map:
+                    raise ValueError(
+                        "Material fragment association references an unknown "
+                        "element.")
+                element_ids.append(element_map[element_id])
+            merged = {
+                'materialId': new_material_id,
+                'elementIds': element_ids,
+            }
+            if 'level' in association:
+                merged['level'] = association['level']
+            self.input['materialAssociations'].append(merged)
+
+        return new_material_id
+
     def addConformalVolumeFromVTK(self, path_to_vtk, subtype="volume", name=None):
         if subtype not in ("volume", "surface"):
             raise ValueError("subtype must be 'volume' or 'surface'.")
@@ -174,6 +288,25 @@ class CaseMaker():
             ]
         })
 
+        return id
+
+    def addCellElementIntervals(self, intervals, name=None):
+        '''Adds a cell element from closed-open relative node intervals.'''
+        if 'mesh' not in self.input:
+            self.input['mesh'] = {}
+        if 'elements' not in self.input['mesh']:
+            self.input['mesh']['elements'] = []
+        elements = self.input['mesh']['elements']
+
+        id = len(elements) + 1
+        element = {
+            "id": id,
+            "type": "cell",
+            "intervals": intervals,
+        }
+        if name is not None:
+            element["name"] = name
+        elements.append(element)
         return id
 
     def addNodeElement(self, position):
@@ -304,6 +437,22 @@ class CaseMaker():
             "phi": phi,
             "domain": domain
         })
+
+    def addMovieProbe(self, elementId, name, field="electric",
+                      component="magnitude", domain=None):
+        if 'probes' not in self.input:
+            self.input['probes'] = []
+
+        probe = {
+            "name": name,
+            "type": "movie",
+            "field": field,
+            "component": component,
+            "elementIds": [elementId],
+        }
+        if domain is not None:
+            probe["domain"] = domain
+        self.input['probes'].append(probe)
 
     def exportCase(self, case_name):
         with open(case_name + '.fdtd.json', 'w') as f:
