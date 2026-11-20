@@ -210,20 +210,42 @@ cmake --build fdtd/build -j
 There is no packaging yet; run the code from the repository root or add `src/`
 to `PYTHONPATH`.
 
+## External material fragments
+
+CaseMaker can merge an external material/mesh fragment produced by another
+tool.  The fragment contains one material, its `cell` elements, and the
+matching associations:
+
+```python
+cm.setGridFromJSON("grid.json")
+cm.addMaterialFragment("fragment.json")
+```
+
+The fragment grid must match the case grid.  Material and element ids are
+remapped to the next free ids in the case.  CaseMaker does not run or inspect
+the tool that produced the fragment; it only consumes the JSON file.
+
+See [docs/fragments.md](docs/fragments.md) for the fragment format, grid
+validation rules and a complete example.
+
 ## API overview
 
 | Method | Purpose |
 | --- | --- |
-| `setGridFromVTK(path)` | Load grid origin, number of cells and steps from a VTK grid. |
+| `setGridFromVTK(path)` / `setGridFromJSON(path)` | Load the grid. |
+| `writeGridJSON(path)` | Write the current grid. |
 | `addCellElementsFromVTK(path)` | Add staircased cell elements from QUAD/LINE VTK cells. |
+| `addCellElementIntervals(intervals)` | Add a cell element from relative node intervals. |
 | `addThinSlotElementsFromVTK(path)` | Add line or embedded-surface cell elements for a thin slot. |
 | `addConformalVolumeFromVTK(path)` | Add a conformal volume/surface from TRIANGLE VTK cells. |
 | `addCellElementBox(bbox)` | Add a cell element from an absolute-coordinate box. |
 | `addNodeElement(position)` | Add a mesh node (used by point probes, etc.). |
 | `addPECMaterial()` / `addMaterialAssociation(...)` | Define materials and associate them with elements. |
+| `addMaterialFragment(path)` | Merge an external material/mesh/association fragment. |
 | `addThinSlotMaterial(width)` | Define a `thinSlot` material (width in metres, matching the grid). |
 | `addPlanewaveSource(...)` | Add a plane-wave source with an excitation file. |
 | `addPointProbe(...)` / `addFarFieldProbe(...)` | Add point and far-field probes. |
+| `addMovieProbe(...)` | Add a time/frequency movie probe for ParaView. |
 | `exportCase(name)` | Write `<name>.fdtd.json`. |
 
 ## Tests
